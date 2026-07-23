@@ -1985,12 +1985,12 @@ useEffect(() => {
     );
   }
 
-  if (!user) {
-    const [authMode, setAuthMode] = useState("login");
-    const [email, setEmail] = useState("");
-    const [password, setPassword] = useState("");
-    const [authError, setAuthError] = useState("");
-    const [authBusy, setAuthBusy] = useState(false);
+const [authMode, setAuthMode] = useState("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+if (!user) {
     const handleAuth = async () => {
       setAuthBusy(true); setAuthError("");
       try {
@@ -2028,7 +2028,6 @@ useEffect(() => {
       </div>
     );
   }
-
   if (loading) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center" style={{ background: C.bg }}>
