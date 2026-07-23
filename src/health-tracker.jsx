@@ -5,8 +5,9 @@ import {
 import {
   Home, Utensils, Dumbbell, TrendingUp, ClipboardList, Droplets, Camera, Plus, Minus, Trash2,
   Check, Flame, Timer, Settings, X, Sparkles, Search, Pencil, ChevronRight, ChevronLeft, ChevronDown,
-  Play, Scale, Footprints, RefreshCw, Moon, CalendarDays,
+  Play, Scale, Footprints, RefreshCw, Moon, CalendarDays, LogOut,
 } from "lucide-react";
+import { supabase } from "./supabase.js";
 
 /* ============================= THEME ============================= */
 const C = {
@@ -35,23 +36,32 @@ const StyleTag = () => (
   `}</style>
 );
 
-/* ============================= STORAGE ============================= */
+/* ============================= SUPABASE STORAGE ============================= */
 const mem = {};
 const store = {
   async get(k) {
     try {
-      if (!window.storage) return mem[k] ?? null;
-      const r = await window.storage.get(k);
-      return r ? JSON.parse(r.value) : null;
-    } catch (e) { return mem[k] ?? null; }
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return mem[k] ?? null;
+      const { data } = await supabase.from("fitai_data").select("value").eq("user_id", user.id).eq("key", k).single();
+      return data ? data.value : null;
+    } catch { return mem[k] ?? null; }
   },
   async set(k, v) {
     mem[k] = v;
-    try { if (window.storage) await window.storage.set(k, JSON.stringify(v)); } catch (e) { /* best-effort */ }
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      await supabase.from("fitai_data").upsert({ user_id: user.id, key: k, value: v, updated_at: new Date() }, { onConflict: "user_id,key" });
+    } catch {}
   },
   async del(k) {
     delete mem[k];
-    try { if (window.storage) await window.storage.delete(k); } catch (e) { /* best-effort */ }
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      await supabase.from("fitai_data").delete().eq("user_id", user.id).eq("key", k);
+    } catch {}
   },
 };
 
@@ -1780,7 +1790,7 @@ function PlanTab({ profile, t, plan, setPlan, toast, curW }) {
 }
 
 /* ============================= SETTINGS SHEET ============================= */
-function SettingsSheet({ profile, saveProfile, onClose, resetAll }) {
+function SettingsSheet({ profile, saveProfile, onClose, resetAll, handleLogout }) {
   const [f, setF] = useState({ ...profile });
   const [habit, setHabit] = useState("");
   const [confirmReset, setConfirmReset] = useState(false);
@@ -1843,6 +1853,11 @@ function SettingsSheet({ profile, saveProfile, onClose, resetAll }) {
           onClose();
         }}>Save settings</Btn>
       </div>
+      <div className="mt-2">
+        <Btn full ghost color={C.rose} onClick={handleLogout}>
+          <LogOut size={14} style={{ display:"inline", marginRight:6 }} />Logout
+        </Btn>
+      </div>
       <div className="mt-3">
         {!confirmReset ? (
           <Btn full ghost color={C.rose} onClick={() => setConfirmReset(true)}>Reset all data…</Btn>
@@ -1855,8 +1870,10 @@ function SettingsSheet({ profile, saveProfile, onClose, resetAll }) {
 }
 
 /* ============================= ROOT APP ============================= */
-export default function App() {
-  const [loading, setLoading] = useState(true);
+export default function HealthTracker() {
+  const [authLoading, setAuthLoading] = useState(true);
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(false);
   const [profile, setProfile] = useState(null);
   const [data, setData] = useState({ days: {}, weights: [] });
   const [plan, setPlan] = useState(null);
@@ -1872,7 +1889,20 @@ export default function App() {
     setTimeout(() => setToasts((ts) => ts.filter((x) => x.id !== id)), 3200);
   };
 
+useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+      setAuthLoading(false);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => {
+      setUser(session?.user ?? null);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
   useEffect(() => {
+    if (!user) return;
+    setLoading(true);
     (async () => {
       const [p, d, pl] = await Promise.all([store.get("profile"), store.get("data"), store.get("plan")]);
       if (p) setProfile({ restDay: 6, plan: "trainer", ...p });
@@ -1937,6 +1967,67 @@ export default function App() {
     setProfile(null); setData({ days: {}, weights: [] }); setPlan(null);
     setShowSettings(false); setTab("home");
   };
+
+ const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setUser(null); setProfile(null); setData({ days:{}, weights:[] }); setPlan(null); setTab("home");
+  };
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center" style={{ background: C.bg }}>
+        <StyleTag />
+        <div className="rounded-3xl flex items-center justify-center scanning" style={{ width:64, height:64, background:`linear-gradient(135deg, #FF8A4C, #FFB37E)` }}>
+          <Flame size={30} color="#0C0E14" />
+        </div>
+        <div className="fd font-bold mt-4" style={{ color: "#F2F0EA" }}>FitAI</div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    const [authMode, setAuthMode] = useState("login");
+    const [email, setEmail] = useState("");
+    const [password, setPassword] = useState("");
+    const [authError, setAuthError] = useState("");
+    const [authBusy, setAuthBusy] = useState(false);
+    const handleAuth = async () => {
+      setAuthBusy(true); setAuthError("");
+      try {
+        const fn = authMode === "signup" ? supabase.auth.signUp : supabase.auth.signInWithPassword;
+        const { error } = await fn.call(supabase.auth, { email, password });
+        if (error) setAuthError(error.message);
+      } catch { setAuthError("Something went wrong"); }
+      setAuthBusy(false);
+    };
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center px-6" style={{ background: C.bg }}>
+        <StyleTag />
+        <div className="rounded-3xl flex items-center justify-center mb-5" style={{ width:64, height:64, background:`linear-gradient(135deg, #FF8A4C, #FFB37E)` }}>
+          <Flame size={30} color="#0C0E14" />
+        </div>
+        <div className="fd font-extrabold text-2xl mb-1" style={{ color: "#F2F0EA" }}>FitAI</div>
+        <div className="fb text-sm mb-8" style={{ color: "#8B93A7" }}>Data syncs across all your devices</div>
+        <div className="w-full max-w-sm flex flex-col gap-3">
+          <div className="flex rounded-2xl p-1 mb-1" style={{ background:"#151A23", border:"1px solid #242B3A" }}>
+            {[["login","Login"],["signup","Sign up"]].map(([k,l]) => (
+              <button key={k} onClick={() => { setAuthMode(k); setAuthError(""); }}
+                className="flex-1 fd font-semibold text-sm py-2.5 rounded-xl active:scale-95 transition-transform"
+                style={{ background: authMode===k ? "#FF8A4C" : "transparent", color: authMode===k ? "#0C0E14" : "#8B93A7" }}>{l}</button>
+            ))}
+          </div>
+          <input style={{ background:"#1B2130", border:"1px solid #242B3A", color:"#F2F0EA", borderRadius:14, padding:"12px 14px", width:"100%", fontSize:15 }} type="email" placeholder="Email address" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <input style={{ background:"#1B2130", border:"1px solid #242B3A", color:"#F2F0EA", borderRadius:14, padding:"12px 14px", width:"100%", fontSize:15 }} type="password" placeholder="Password (min 6 chars)" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key==="Enter" && handleAuth()} />
+          {authError && <div className="fb text-xs px-1" style={{ color:"#F87180" }}>⚠️ {authError}</div>}
+          <button onClick={handleAuth} disabled={authBusy || !email || password.length < 6}
+            className="fd font-bold py-3.5 rounded-2xl active:scale-95 transition-transform mt-1"
+            style={{ background:"#FF8A4C", color:"#0C0E14", opacity: authBusy||!email||password.length<6 ? 0.5 : 1 }}>
+            {authBusy ? "Please wait…" : authMode==="signup" ? "Create account" : "Login"}
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (loading) {
     return (
@@ -2006,7 +2097,7 @@ export default function App() {
         </div>
       </div>
 
-      {showSettings && <SettingsSheet profile={profile} saveProfile={saveProfile} onClose={() => setShowSettings(false)} resetAll={resetAll} />}
+      {showSettings && <SettingsSheet profile={profile} saveProfile={saveProfile} onClose={() => setShowSettings(false)} resetAll={resetAll} handleLogout={handleLogout} />}
     </div>
   );
 }
